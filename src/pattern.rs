@@ -39,6 +39,7 @@ pub fn run_pattern(cfg: &Config, pattern: DbPattern) -> Vec<(String, PhaseResult
         DbPattern::SqliteWal => run_sqlite_wal(cfg),
         DbPattern::Postgres  => run_postgres(cfg),
         DbPattern::Rocksdb   => run_rocksdb(cfg),
+        DbPattern::Mysql     => run_mysql(cfg),
     }
 }
 
@@ -72,6 +73,11 @@ fn pattern_paths(cfg: &Config, pattern: DbPattern) -> Vec<PathBuf> {
             v.push(cfg.dir.join("pat_sst_out.dat"));
             v
         }
+        DbPattern::Mysql => vec![
+            cfg.dir.join("pat_ibdata.dat"),     // InnoDB tablespace / buffer pool
+            cfg.dir.join("pat_iblog.dat"),      // InnoDB redo log
+            cfg.dir.join("pat_dblwr.dat"),      // Doublewrite buffer
+        ],
     }
 }
 
@@ -97,6 +103,24 @@ fn split_75_25(cfg: &Config) -> (Option<Duration>, u64, Option<Duration>, u64) {
             let a = (cfg.num_ops * 3 / 4).max(1);
             let b = (cfg.num_ops - a).max(1);
             (None, a, None, b)
+        }
+    }
+}
+
+/// Split the total budget 60 / 30 / 10 (A / B / C).
+fn split_60_30_10(cfg: &Config) -> (Option<Duration>, u64, Option<Duration>, u64, Option<Duration>, u64) {
+    match cfg.duration {
+        Some(d) => {
+            let a = d.mul_f64(0.60);
+            let b = d.mul_f64(0.30);
+            let c = d - a - b;
+            (Some(a), 0, Some(b), 0, Some(c), 0)
+        }
+        None => {
+            let a = (cfg.num_ops * 6 / 10).max(1);
+            let b = (cfg.num_ops * 3 / 10).max(1);
+            let c = (cfg.num_ops - a - b).max(1);
+            (None, a, None, b, None, c)
         }
     }
 }
@@ -400,4 +424,167 @@ fn run_rocksdb(cfg: &Config) -> Vec<(String, PhaseResult)> {
     }
 
     vec![("RocksDB / Compaction".to_string(), m.summarise(t_start.elapsed()))]
+}
+
+// ── MySQL / MariaDB InnoDB pattern ────────────────────────────────────────────
+
+/// Simulate MySQL/MariaDB InnoDB I/O:
+///
+///   Sub-phase 1 (60%): Buffer pool flush — random 16 KB page writes to the
+///                      tablespace file (ibdata / .ibd), matching InnoDB's
+///                      default page size and page-cleaner behavior.
+///
+///   Sub-phase 2 (30%): Redo log — sequential 4 KB writes to the redo log
+///                      (ib_logfile0) with an fsync after every write,
+///                      simulating innodb_flush_log_at_trx_commit=1 (full
+///                      durability mode).
+///
+///   Sub-phase 3 (10%): Doublewrite buffer — InnoDB's crash-safety mechanism
+///                      that writes each dirty page twice: first sequentially
+///                      to the doublewrite buffer file (fsync), then at its
+///                      real random offset in the tablespace (fsync).  This
+///                      sub-phase alternates between those two writes per op.
+fn run_mysql(cfg: &Config) -> Vec<(String, PhaseResult)> {
+    const PAGE:  usize = 16384; // 16 KB — InnoDB default page size
+    const RLOG:  usize = 4096;  //  4 KB — typical redo log write unit
+
+    let ibdata_path = cfg.dir.join("pat_ibdata.dat");
+    let iblog_path  = cfg.dir.join("pat_iblog.dat");
+    let dblwr_path  = cfg.dir.join("pat_dblwr.dat");
+    let file_size   = cfg.file_size;
+    let num_pages   = (file_size / PAGE as u64).max(1);
+
+    let (dur_a, ops_a, dur_b, ops_b, dur_c, ops_c) = split_60_30_10(cfg);
+
+    // ── Sub-phase 1: Buffer pool flush ────────────────────────────────────────
+    let m1 = Metrics::new();
+    let t1 = Instant::now();
+    {
+        let limit = subphase_limit(dur_a, ops_a);
+        let buf   = AlignedBuf::new(PAGE);
+        let mut rng = rand::thread_rng();
+        let mut f = match open_rw(&ibdata_path, cfg.unbuffered) {
+            Ok(f) => f,
+            Err(e) => { eprintln!("[ERROR] mysql ibdata open: {e}"); return vec![]; }
+        };
+        let mut ops_done = 0u64;
+        loop {
+            if limit.is_done(ops_done) { break; }
+            let offset = rng.gen_range(0..num_pages) * PAGE as u64;
+            if f.seek(SeekFrom::Start(offset)).is_err() {
+                m1.record_error(); break;
+            }
+            let t0 = Instant::now();
+            if let Err(e) = f.write_all(buf.as_slice()) {
+                eprintln!("[ERROR] mysql buffer pool flush write: {e}");
+                m1.record_error(); break;
+            }
+            m1.record(t0.elapsed(), PAGE);
+            ops_done += 1;
+        }
+    }
+    let r1 = m1.summarise(t1.elapsed());
+
+    // ── Sub-phase 2: Redo log (innodb_flush_log_at_trx_commit = 1) ───────────
+    let m2 = Metrics::new();
+    let t2 = Instant::now();
+    {
+        let limit = subphase_limit(dur_b, ops_b);
+        let buf   = AlignedBuf::new(RLOG);
+        let mut f = match open_rw(&iblog_path, cfg.unbuffered) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("[ERROR] mysql redo log open: {e}");
+                return vec![("InnoDB / Buffer Pool Flush".to_string(), r1)];
+            }
+        };
+        let mut ops_done = 0u64;
+        loop {
+            if limit.is_done(ops_done) { break; }
+            if f.stream_position().unwrap_or(0) + RLOG as u64 > file_size {
+                let _ = f.seek(SeekFrom::Start(0));
+            }
+            let t0 = Instant::now();
+            if let Err(e) = f.write_all(buf.as_slice()) {
+                eprintln!("[ERROR] mysql redo log write: {e}");
+                m2.record_error(); break;
+            }
+            // Full fsync on every write — innodb_flush_log_at_trx_commit=1.
+            let _ = f.sync_all();
+            m2.record(t0.elapsed(), RLOG);
+            ops_done += 1;
+        }
+    }
+    let r2 = m2.summarise(t2.elapsed());
+
+    // ── Sub-phase 3: Doublewrite buffer ───────────────────────────────────────
+    // Each op: write the page sequentially to the doublewrite buffer + fsync,
+    // then write it to a random offset in the tablespace + fsync.
+    // This is the exact two-write sequence InnoDB uses for crash safety.
+    let m3 = Metrics::new();
+    let t3 = Instant::now();
+    {
+        let limit   = subphase_limit(dur_c, ops_c);
+        let buf     = AlignedBuf::new(PAGE);
+        let mut rng = rand::thread_rng();
+        let mut dblwr_f = match open_rw(&dblwr_path, cfg.unbuffered) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("[ERROR] mysql doublewrite open: {e}");
+                return vec![
+                    ("InnoDB / Buffer Pool Flush".to_string(), r1),
+                    ("InnoDB / Redo Log".to_string(),          r2),
+                ];
+            }
+        };
+        let mut ibd_f = match open_rw(&ibdata_path, cfg.unbuffered) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("[ERROR] mysql ibdata reopen: {e}");
+                return vec![
+                    ("InnoDB / Buffer Pool Flush".to_string(), r1),
+                    ("InnoDB / Redo Log".to_string(),          r2),
+                ];
+            }
+        };
+
+        let mut ops_done = 0u64;
+        loop {
+            if limit.is_done(ops_done) { break; }
+
+            let t0 = Instant::now();
+
+            // Step 1: sequential write to doublewrite buffer + fsync.
+            if dblwr_f.stream_position().unwrap_or(0) + PAGE as u64 > file_size {
+                let _ = dblwr_f.seek(SeekFrom::Start(0));
+            }
+            if let Err(e) = dblwr_f.write_all(buf.as_slice()) {
+                eprintln!("[ERROR] mysql doublewrite write: {e}");
+                m3.record_error(); break;
+            }
+            let _ = dblwr_f.sync_all();
+
+            // Step 2: write the page to its real location in the tablespace + fsync.
+            let offset = rng.gen_range(0..num_pages) * PAGE as u64;
+            if ibd_f.seek(SeekFrom::Start(offset)).is_err() {
+                m3.record_error(); break;
+            }
+            if let Err(e) = ibd_f.write_all(buf.as_slice()) {
+                eprintln!("[ERROR] mysql doublewrite ibd write: {e}");
+                m3.record_error(); break;
+            }
+            let _ = ibd_f.sync_all();
+
+            // Two PAGE-sized writes per op.
+            m3.record(t0.elapsed(), PAGE * 2);
+            ops_done += 1;
+        }
+    }
+    let r3 = m3.summarise(t3.elapsed());
+
+    vec![
+        ("InnoDB / Buffer Pool Flush".to_string(), r1),
+        ("InnoDB / Redo Log".to_string(),          r2),
+        ("InnoDB / Doublewrite Buffer".to_string(), r3),
+    ]
 }

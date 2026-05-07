@@ -100,6 +100,9 @@ pub enum DbPattern {
     /// RocksDB: sequential 64 KB reads from 4 input SSTs + sequential output writes
     #[value(name = "rocksdb")]
     Rocksdb,
+    /// MySQL/MariaDB InnoDB: buffer pool flush + redo log + doublewrite buffer
+    #[value(name = "mysql")]
+    Mysql,
 }
 
 // ── Parsed, validated config ──────────────────────────────────────────────────
