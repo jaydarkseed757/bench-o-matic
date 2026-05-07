@@ -7,6 +7,7 @@ mod cli;
 mod metrics;
 mod output;
 mod pattern;
+mod report;
 mod worker;
 
 #[cfg(target_os = "linux")]
@@ -137,6 +138,11 @@ fn main() {
             print_banner("Cleanup");
             pattern::cleanup_pattern_files(&cfg, pat);
         }
+        if cfg.report {
+            if let Err(e) = report::generate(&cfg, &results) {
+                eprintln!("[WARN] Could not write report: {e}");
+            }
+        }
         println!();
         return;
     }
@@ -230,6 +236,20 @@ fn main() {
         });
 
         println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+    }
+
+    // ── HTML report ───────────────────────────────────────────────────────────
+
+    if cfg.report {
+        let report_results: Vec<(String, PhaseResult)> = results
+            .into_iter()
+            .map(|(k, r, _)| (title_case(&k.replace('_', " ")), r))
+            .collect();
+        if let Err(e) = report::generate(&cfg, &report_results) {
+            eprintln!("[WARN] Could not write report: {e}");
+        }
+        // Re-bind results without the moved values — cleanup uses the paths, not results.
+        // (nothing to rebind; results were consumed above, cleanup only needs `files`)
     }
 
     // ── Cleanup ───────────────────────────────────────────────────────────────

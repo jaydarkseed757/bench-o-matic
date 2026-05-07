@@ -135,6 +135,8 @@ pub struct Config {
     pub num_files: usize,
     /// Database I/O pattern simulation.
     pub pattern: Option<DbPattern>,
+    /// Save an HTML dashboard report.
+    pub report: bool,
 }
 
 // ── Raw clap args ─────────────────────────────────────────────────────────────
@@ -224,6 +226,10 @@ struct Args {
     /// Simulate a real-world database I/O pattern (overrides --workload/--mode)
     #[arg(long)]
     pattern: Option<DbPattern>,
+
+    /// Save an HTML dashboard report to the current directory
+    #[arg(long)]
+    report: bool,
 }
 
 pub fn parse() -> Config {
@@ -294,6 +300,7 @@ pub fn parse() -> Config {
         engine: args.engine,
         num_files,
         pattern: args.pattern,
+        report: args.report,
     }
 }
 
