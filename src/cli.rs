@@ -88,6 +88,20 @@ pub enum Engine {
     IoUring,
 }
 
+/// Database I/O pattern to simulate.
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum DbPattern {
+    /// SQLite WAL-mode: sequential 4 KB WAL writes + checkpoint reads/writes
+    #[value(name = "sqlite-wal")]
+    SqliteWal,
+    /// PostgreSQL: random 8 KB bgwriter flushes + sequential 8 KB WAL writes
+    #[value(name = "postgres")]
+    Postgres,
+    /// RocksDB: sequential 64 KB reads from 4 input SSTs + sequential output writes
+    #[value(name = "rocksdb")]
+    Rocksdb,
+}
+
 // ── Parsed, validated config ──────────────────────────────────────────────────
 
 pub struct Config {
@@ -116,6 +130,8 @@ pub struct Config {
     pub engine: Engine,
     /// Number of test files (Feature 5).
     pub num_files: usize,
+    /// Database I/O pattern simulation.
+    pub pattern: Option<DbPattern>,
 }
 
 // ── Raw clap args ─────────────────────────────────────────────────────────────
@@ -201,6 +217,10 @@ struct Args {
     /// Number of test files (default = threads)
     #[arg(long)]
     num_files: Option<usize>,
+
+    /// Simulate a real-world database I/O pattern (overrides --workload/--mode)
+    #[arg(long)]
+    pattern: Option<DbPattern>,
 }
 
 pub fn parse() -> Config {
@@ -270,6 +290,7 @@ pub fn parse() -> Config {
         queue_depth: args.queue_depth.max(1),
         engine: args.engine,
         num_files,
+        pattern: args.pattern,
     }
 }
 

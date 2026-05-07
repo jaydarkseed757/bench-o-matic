@@ -6,6 +6,7 @@
 mod cli;
 mod metrics;
 mod output;
+mod pattern;
 mod worker;
 
 #[cfg(target_os = "linux")]
@@ -86,6 +87,9 @@ fn main() {
     if let Some(iv) = cfg.interval {
         println!("  Interval     : {:.0}s", iv.as_secs_f64());
     }
+    if let Some(pat) = cfg.pattern {
+        println!("  Pattern      : {pat:?}  (overrides workload/mode)");
+    }
 
     // ── Preallocate ───────────────────────────────────────────────────────────
 
@@ -99,6 +103,42 @@ fn main() {
             std::process::exit(1);
         }
         println!("OK");
+    }
+
+    // ── Pattern dispatch ──────────────────────────────────────────────────────
+
+    if let Some(pat) = cfg.pattern {
+        let results = pattern::run_pattern(&cfg, pat);
+        print_banner("Results");
+        for (name, result) in &results {
+            print_result(name, result);
+            if cfg.histogram {
+                print_histogram(&result.raw_latencies);
+            }
+        }
+        if cfg.json {
+            print_banner("JSON");
+            let json_results: serde_json::Map<String, serde_json::Value> = results
+                .iter()
+                .map(|(k, v)| (k.clone(), v.to_json_value()))
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "pattern": format!("{pat:?}"),
+                    "results": json_results,
+                }))
+                .unwrap()
+            );
+        }
+        if cfg.no_cleanup {
+            println!("\n  Pattern files retained in {}", cfg.dir.display());
+        } else {
+            print_banner("Cleanup");
+            pattern::cleanup_pattern_files(&cfg, pat);
+        }
+        println!();
+        return;
     }
 
     // ── Determine phases ──────────────────────────────────────────────────────
@@ -384,6 +424,15 @@ fn run_phase(
 // ── Validation ────────────────────────────────────────────────────────────────
 
 fn validate(cfg: &Config) {
+    // Pattern mode uses hardcoded block sizes (max 64 KB for rocksdb).
+    if cfg.pattern.is_some() {
+        if cfg.file_size < 65536 {
+            eprintln!("[ERROR] --file-size must be at least 64K when using --pattern");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if cfg.block_size == 0 {
         eprintln!("[ERROR] --block-size must be > 0");
         std::process::exit(1);
