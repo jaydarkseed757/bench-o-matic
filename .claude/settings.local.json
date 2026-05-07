@@ -9,7 +9,16 @@
       "Bash(./target/debug/bench_io --file-size 8M --block-size 4K --num-ops 200 --threads 2 --mode both --workload mixed --warmup 10 --histogram)",
       "Bash(./target/debug/bench_io --file-size 4M --block-size 64K --num-ops 50 --threads 1 --mode random --workload write --warmup 5 --json --no-cleanup)",
       "Bash(./target/debug/bench_io --help)",
-      "Bash(cargo run *)"
+      "Bash(cargo run *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git remote *)",
+      "Bash(git branch *)",
+      "Bash(git push *)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic add src/cli.rs src/main.rs src/pattern.rs)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic status)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic add .claude/settings.local.json)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic commit -m ' *)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic push)"
     ]
   }
 }
