@@ -18,7 +18,24 @@
       "Bash(git -C /Users/jay/projects/bench-o-matic status)",
       "Bash(git -C /Users/jay/projects/bench-o-matic add .claude/settings.local.json)",
       "Bash(git -C /Users/jay/projects/bench-o-matic commit -m ' *)",
-      "Bash(git -C /Users/jay/projects/bench-o-matic push)"
+      "Bash(git -C /Users/jay/projects/bench-o-matic push)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic log --format=\"%h %s%n%b\")",
+      "Bash(git -C /Users/jay/projects/bench-o-matic update-ref -d refs/original/refs/heads/main)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic update-ref -d refs/original/refs/remotes/origin/main)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic reflog expire --expire=now --all)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic gc --prune=now)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic add src/cli.rs src/pattern.rs)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic commit -m 'Add MySQL/MariaDB InnoDB pattern \\(--pattern mysql\\) *)",
+      "Bash(rm bench-report-*.html)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic add src/cli.rs src/main.rs src/report.rs)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic commit -m 'Add --report flag: generates self-contained HTML dashboard *)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic add src/pattern.rs src/main.rs src/report.rs)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic commit -m 'Fix 4 bugs found in code review *)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic branch -a)",
+      "Bash(gh repo *)",
+      "Bash(gh auth *)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic log --oneline)",
+      "Bash(git -C /Users/jay/projects/bench-o-matic diff --cached --stat)"
     ]
   }
 }
