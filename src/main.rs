@@ -6,6 +6,8 @@
 mod cli;
 mod metrics;
 mod output;
+mod pattern;
+mod report;
 mod worker;
 
 #[cfg(target_os = "linux")]
@@ -86,19 +88,66 @@ fn main() {
     if let Some(iv) = cfg.interval {
         println!("  Interval     : {:.0}s", iv.as_secs_f64());
     }
+    if let Some(pat) = cfg.pattern {
+        println!("  Pattern      : {pat:?}  (overrides workload/mode)");
+    }
 
     // ── Preallocate ───────────────────────────────────────────────────────────
+    // Skip normal bench files in pattern mode — patterns create their own files.
 
-    print_banner("Preallocating test files");
-    for path in &files {
-        let name = path.file_name().unwrap().to_string_lossy();
-        print!("  {name}  ({}) ... ", human_size(cfg.file_size));
-        std::io::stdout().flush().ok();
-        if let Err(e) = preallocate(path, cfg.file_size) {
-            eprintln!("FAILED\n[ERROR] {e}");
-            std::process::exit(1);
+    if cfg.pattern.is_none() {
+        print_banner("Preallocating test files");
+        for path in &files {
+            let name = path.file_name().unwrap().to_string_lossy();
+            print!("  {name}  ({}) ... ", human_size(cfg.file_size));
+            std::io::stdout().flush().ok();
+            if let Err(e) = preallocate(path, cfg.file_size) {
+                eprintln!("FAILED\n[ERROR] {e}");
+                std::process::exit(1);
+            }
+            println!("OK");
         }
-        println!("OK");
+    }
+
+    // ── Pattern dispatch ──────────────────────────────────────────────────────
+
+    if let Some(pat) = cfg.pattern {
+        let results = pattern::run_pattern(&cfg, pat);
+        print_banner("Results");
+        for (name, result) in &results {
+            print_result(name, result);
+            if cfg.histogram {
+                print_histogram(&result.raw_latencies);
+            }
+        }
+        if cfg.json {
+            print_banner("JSON");
+            let json_results: serde_json::Map<String, serde_json::Value> = results
+                .iter()
+                .map(|(k, v)| (k.clone(), v.to_json_value()))
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "pattern": format!("{pat:?}"),
+                    "results": json_results,
+                }))
+                .unwrap()
+            );
+        }
+        if cfg.no_cleanup {
+            println!("\n  Pattern files retained in {}", cfg.dir.display());
+        } else {
+            print_banner("Cleanup");
+            pattern::cleanup_pattern_files(&cfg, pat);
+        }
+        if cfg.report {
+            if let Err(e) = report::generate(&cfg, &results) {
+                eprintln!("[WARN] Could not write report: {e}");
+            }
+        }
+        println!();
+        return;
     }
 
     // ── Determine phases ──────────────────────────────────────────────────────
@@ -190,6 +239,20 @@ fn main() {
         });
 
         println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+    }
+
+    // ── HTML report ───────────────────────────────────────────────────────────
+
+    if cfg.report {
+        let report_results: Vec<(String, PhaseResult)> = results
+            .into_iter()
+            .map(|(k, r, _)| (title_case(&k.replace('_', " ")), r))
+            .collect();
+        if let Err(e) = report::generate(&cfg, &report_results) {
+            eprintln!("[WARN] Could not write report: {e}");
+        }
+        // Re-bind results without the moved values — cleanup uses the paths, not results.
+        // (nothing to rebind; results were consumed above, cleanup only needs `files`)
     }
 
     // ── Cleanup ───────────────────────────────────────────────────────────────
@@ -384,6 +447,39 @@ fn run_phase(
 // ── Validation ────────────────────────────────────────────────────────────────
 
 fn validate(cfg: &Config) {
+    // Disk-space check applies to all modes. Pattern mode has its own file
+    // count; regular mode uses cfg.num_files.
+    #[cfg(unix)]
+    {
+        use cli::DbPattern;
+        let n_files: u64 = match cfg.pattern {
+            Some(DbPattern::Rocksdb)                              => 5,
+            Some(DbPattern::Mysql)                                => 3,
+            Some(DbPattern::SqliteWal) | Some(DbPattern::Postgres) => 2,
+            None => cfg.num_files as u64,
+        };
+        if let Some(free) = free_bytes(&cfg.dir) {
+            let needed = cfg.file_size * n_files;
+            if needed > (free as f64 * 0.80) as u64 {
+                eprintln!(
+                    "[ERROR] Test requires {} but only {} free (80% safety limit).",
+                    human_size(needed),
+                    human_size(free)
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Pattern mode uses hardcoded block sizes (max 64 KB for rocksdb).
+    if cfg.pattern.is_some() {
+        if cfg.file_size < 65536 {
+            eprintln!("[ERROR] --file-size must be at least 64K when using --pattern");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if cfg.block_size == 0 {
         eprintln!("[ERROR] --block-size must be > 0");
         std::process::exit(1);
@@ -399,20 +495,6 @@ fn validate(cfg: &Config) {
     if cfg.duration.is_none() && cfg.num_ops == 0 {
         eprintln!("[ERROR] --num-ops must be ≥ 1 when --duration is not set");
         std::process::exit(1);
-    }
-
-    // Refuse to consume more than 80% of available disk space.
-    #[cfg(unix)]
-    if let Some(free) = free_bytes(&cfg.dir) {
-        let needed = cfg.file_size * cfg.num_files as u64;
-        if needed > (free as f64 * 0.80) as u64 {
-            eprintln!(
-                "[ERROR] Test requires {} but only {} free (80% safety limit).",
-                human_size(needed),
-                human_size(free)
-            );
-            std::process::exit(1);
-        }
     }
 }
 
