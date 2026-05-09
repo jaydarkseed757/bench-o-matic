@@ -119,7 +119,7 @@ fn split_60_30_10(cfg: &Config) -> (Option<Duration>, u64, Option<Duration>, u64
         None => {
             let a = (cfg.num_ops * 6 / 10).max(1);
             let b = (cfg.num_ops * 3 / 10).max(1);
-            let c = (cfg.num_ops - a - b).max(1);
+            let c = cfg.num_ops.saturating_sub(a).saturating_sub(b).max(1);
             (None, a, None, b, None, c)
         }
     }

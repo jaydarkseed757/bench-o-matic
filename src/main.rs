@@ -93,17 +93,20 @@ fn main() {
     }
 
     // ── Preallocate ───────────────────────────────────────────────────────────
+    // Skip normal bench files in pattern mode — patterns create their own files.
 
-    print_banner("Preallocating test files");
-    for path in &files {
-        let name = path.file_name().unwrap().to_string_lossy();
-        print!("  {name}  ({}) ... ", human_size(cfg.file_size));
-        std::io::stdout().flush().ok();
-        if let Err(e) = preallocate(path, cfg.file_size) {
-            eprintln!("FAILED\n[ERROR] {e}");
-            std::process::exit(1);
+    if cfg.pattern.is_none() {
+        print_banner("Preallocating test files");
+        for path in &files {
+            let name = path.file_name().unwrap().to_string_lossy();
+            print!("  {name}  ({}) ... ", human_size(cfg.file_size));
+            std::io::stdout().flush().ok();
+            if let Err(e) = preallocate(path, cfg.file_size) {
+                eprintln!("FAILED\n[ERROR] {e}");
+                std::process::exit(1);
+            }
+            println!("OK");
         }
-        println!("OK");
     }
 
     // ── Pattern dispatch ──────────────────────────────────────────────────────
@@ -444,6 +447,30 @@ fn run_phase(
 // ── Validation ────────────────────────────────────────────────────────────────
 
 fn validate(cfg: &Config) {
+    // Disk-space check applies to all modes. Pattern mode has its own file
+    // count; regular mode uses cfg.num_files.
+    #[cfg(unix)]
+    {
+        use cli::DbPattern;
+        let n_files: u64 = match cfg.pattern {
+            Some(DbPattern::Rocksdb)                              => 5,
+            Some(DbPattern::Mysql)                                => 3,
+            Some(DbPattern::SqliteWal) | Some(DbPattern::Postgres) => 2,
+            None => cfg.num_files as u64,
+        };
+        if let Some(free) = free_bytes(&cfg.dir) {
+            let needed = cfg.file_size * n_files;
+            if needed > (free as f64 * 0.80) as u64 {
+                eprintln!(
+                    "[ERROR] Test requires {} but only {} free (80% safety limit).",
+                    human_size(needed),
+                    human_size(free)
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Pattern mode uses hardcoded block sizes (max 64 KB for rocksdb).
     if cfg.pattern.is_some() {
         if cfg.file_size < 65536 {
@@ -468,20 +495,6 @@ fn validate(cfg: &Config) {
     if cfg.duration.is_none() && cfg.num_ops == 0 {
         eprintln!("[ERROR] --num-ops must be ≥ 1 when --duration is not set");
         std::process::exit(1);
-    }
-
-    // Refuse to consume more than 80% of available disk space.
-    #[cfg(unix)]
-    if let Some(free) = free_bytes(&cfg.dir) {
-        let needed = cfg.file_size * cfg.num_files as u64;
-        if needed > (free as f64 * 0.80) as u64 {
-            eprintln!(
-                "[ERROR] Test requires {} but only {} free (80% safety limit).",
-                human_size(needed),
-                human_size(free)
-            );
-            std::process::exit(1);
-        }
     }
 }
 

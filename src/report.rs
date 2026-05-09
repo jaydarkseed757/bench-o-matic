@@ -314,7 +314,8 @@ fn push_cfg(out: &mut String, key: &str, val: &str) {
 }
 
 fn js_str(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "\\'"))
+    let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{escaped}'")
 }
 
 fn js_str_arr<'a>(it: impl Iterator<Item = &'a str>) -> String {
